@@ -48,7 +48,8 @@ public class NRF24L01 {
 	private final int RF_SETUP   			= 0x06;
 	private final int STATUS_REGISTER		= 0x07;
 	private final int OBSERVE_TX = 0x08;
-	private final int CD         = 0x09;
+	private final int RPD        = 0x09;
+	private final int CD         = 0x09;    //CD has been changed to RPD - keeping CD for compatibility reasons
 	private final int RX_ADDR_P0 = 0x0A;
 	private final int RX_ADDR_P1 = 0x0B;
 	private final int RX_ADDR_P2 = 0x0C;
@@ -67,7 +68,7 @@ public class NRF24L01 {
 	private final int FEATURE    = 0x1D;
 
 	/* Bit Mnemonics */
-	private final int MASK_RX_DR  =6;
+	private final int MASK_RX_DR = 6;
 	private final int MASK_TX_DS = 5;
 	private final int MASK_MAX_RT= 4;
 	private final int EN_CRC     = 3;
@@ -82,38 +83,42 @@ public class NRF24L01 {
 	private final int ENAA_P0    = 0;
 	private final int ERX_P5     = 5;
 	private final int ERX_P4     = 4;
-	private final int ERX_P3      =3;
+	private final int ERX_P3     = 3;
 	private final int ERX_P2     = 2;
 	private final int ERX_P1     = 1;
 	private final int ERX_P0     = 0;
 	private final int AW         = 0;
 	private final int ARD        = 4;
 	private final int ARC        = 0;
+
+	// RF SETUP
+	private final int CONT_WAVE	 = 7;
 	private final int RF_DR_LOW  = 5;
 	private final int PLL_LOCK   = 4;
 	private final int RF_DR_HIGH = 3;
 	private final int RF_PWR     = 1;
-	private final int LNA_HCURR =  0 ;       
+	private final int LNA_HCURR  = 0;
+
 	private final int RX_DR      = 6; // RX Data ready status bit
 	private final int TX_DS      = 5; // TX Data ready status bit
 	private final int MAX_RT     = 4; // Maximum number of TX retransmits reached status bit
 	private final int RX_P_NO    = 1;
 	private final int TX_FULL    = 5; // TX FIFO full status bit
-	private final int PLOS_CNT  =  4;
-	private final int ARC_CNT   =  0;
-	private final int TX_REUSE  =  6;
-	private final int FIFO_FULL =  5;
+	private final int PLOS_CNT   = 4;
+	private final int ARC_CNT    = 0;
+	private final int TX_REUSE   = 6;
+	private final int FIFO_FULL  = 5;
 	private final int TX_EMPTY   = 4;
-	private final int RX_FULL     =1;
+	private final int RX_FULL    = 1;
 	private final int RX_EMPTY   = 0;
 	private final int DPL_P5     = 5;
-	private final int DPL_P4    =  4;
-	private final int DPL_P3    =  3;
-	private final int DPL_P2    =  2;
-	private final int DPL_P1    =  1;
-	private final int DPL_P0    =  0;
-	private final int EN_DPL    =  2;
-	private final int EN_ACK_PAY=  1;
+	private final int DPL_P4     = 4;
+	private final int DPL_P3     = 3;
+	private final int DPL_P2     = 2;
+	private final int DPL_P1     = 1;
+	private final int DPL_P0     = 0;
+	private final int EN_DPL     = 2;
+	private final int EN_ACK_PAY = 1;
 	private final int EN_DYN_ACK = 0;
 
 	/* Instruction Mnemonics */
@@ -139,6 +144,14 @@ public class NRF24L01 {
 	public static final int RF24_PA_LOW   = 0b01;
 	public static final int RF24_PA_HIGH  = 0b10;
 	public static final int RF24_PA_MAX   = 0b11;
+	public static final int RF24_PA_MASK  = 0b11;
+
+	// address width
+	public static final int RF24_AW_1BYTE  = 0b00;
+	public static final int RF24_AW_2BYTES = 0b00;
+	public static final int RF24_AW_3BYTES = 0b00;
+	public static final int RF24_AW_4BYTES = 0b00;
+	public static final int RF24_AW_5BYTES = 0b00;
 	
 	public NRF24L01(JPigpio pigpio) {
 		this.pigpio = pigpio;
@@ -169,14 +182,20 @@ public class NRF24L01 {
 		if (setupReg == 0 || setupReg == (byte)0xFF)
 			return false;
 
-		// reset CONFIG register & set CRC to 32 bit
-		configRegister(CONFIG_REGISTER, (byte)0b00001100);
+		// if there was some carrier test running before
+		clearRegisterBits(RF_SETUP, (byte)(CONT_WAVE | PLL_LOCK));
+
+		// reset CONFIG register & set CRC to 16 bit
+		setCRCSize(2);
 
 		// Set the address width to be 5 bytes
 		setAddressWidths((byte)0b11);
 
 		// enable receiving on pipe 0 and pipe 1
 		configRegister(EN_RXADDR_REGISTER, (byte)0b11);
+
+		// set data rate to 1Mbps
+		setDataRate(RF24_1MBPS);
 
 		// Set 1500uS (minimum for 32B payload in ESB@250KBPS) timeouts, to make testing a little easier
 		// WARNING: If this is ever lowered, either 250KBS mode with AA is broken or maximum packet
@@ -221,22 +240,34 @@ public class NRF24L01 {
 		writeRegister(RX_ADDR_P1,adr);
 		ceHigh();
 	}
-	
-	public void setTADDR(byte adr[]) throws PigpioException
-	// Sets the transmitting address
-	{
-		/*
-		 * RX_ADDR_P0 must be set to the sending addr for auto ack to work.
-		 */
-		writeRegister(RX_ADDR_P0,adr);
+
+	/**
+	 * Sets the transmitting address.
+	 * Note: RX_ADDR_P0 must be set to the sending addr for auto ack to work.
+	 * @param adr TX address
+	 * @param setP0Too if true, set RX_ADDR_P0 to TX address too (for auto ack to work)
+	 * @throws PigpioException
+     */
+	public void setTADDR(byte adr[], boolean setP0Too) throws PigpioException {
 		writeRegister(TX_ADDR,adr);
-	} // End of setTADDR
+		if (setP0Too)
+			writeRegister(RX_ADDR_P0,adr);
+
+	}
 
 	public void setChannel(int ch) throws PigpioException {
 		configRegister(RF_CH_REGISTER, (byte)ch);
 		channel = (byte)ch;
 	}
 
+	/**
+	 * Sets data rate
+	 * @param dataRate datarate to use
+	 * 				RF24_250KBPS = 250 kbit/s
+	 * 				RF24_1MBPS = 1 Mbit/s
+	 * 				RF24_2MBPS = 2 Mbit/2*
+	 * @throws PigpioException
+     */
 	public void setDataRate(int dataRate) throws PigpioException{
 		byte setupReg = readByteRegister(RF_SETUP);
 		byte newValue = setupReg;
@@ -252,10 +283,26 @@ public class NRF24L01 {
 			newValue = (byte)(newValue & (~(1<<RF_DR_HIGH)));
 
 		writeByteRegister(RF_SETUP, newValue);
+
 	}
 
-	public void setPALevel(int level){
+	/**
+	 * Sets TX output power level.
+	 * @param level TX output power level
+	 *              RF24_PA_MIN = -18db
+	 *              RF24_PA_LOW = -12db
+	 *              RF24_PA_HIGH = -6db
+	 *              RF24_PA_MAX = 0db
+	 * @throws PigpioException
+     */
+	public void setPALevel(int level) throws PigpioException{
+		byte setupReg = readByteRegister(RF_SETUP);
+		byte newValue = setupReg;
 
+		newValue = (byte)(newValue & (~RF24_PA_MASK));
+		newValue = (byte)(newValue | level);
+
+		writeByteRegister(RF_SETUP, newValue);
 	}
 
 	public void setPayloadWidth(int pipe, byte width) throws PigpioException {
@@ -273,6 +320,11 @@ public class NRF24L01 {
 		setCRCSize(0);
 	}
 
+	/**
+	 * Set CRC size
+	 * @param crcSize CRC size in bytes (0 = disable, 1 = 8 bits, 2 = 16 bits)
+	 * @throws PigpioException
+     */
 	public void setCRCSize(int crcSize) throws PigpioException {
 		switch (crcSize){
 			case 0:
@@ -282,13 +334,13 @@ public class NRF24L01 {
 			case 1:
 				setRegisterBits(CONFIG_REGISTER, (byte)(1<<EN_CRC));    // enable CRC
 				baseConfig = baseConfig | (1<<EN_CRC);
-				clearRegisterBits(CONFIG_REGISTER, (byte)(1<<CRCO));    // zero = 16 bit CRC
+				clearRegisterBits(CONFIG_REGISTER, (byte)(1<<CRCO));    // zero = 1 byte = 8 bit CRC
 				baseConfig = baseConfig & ~(1<<CRCO);
 				break;
 			case 2:
 				setRegisterBits(CONFIG_REGISTER, (byte)(1<<EN_CRC));    // enable CRC
 				baseConfig = baseConfig | (1<<EN_CRC);
-				setRegisterBits(CONFIG_REGISTER, (byte)(1<<CRCO));      // one = 32 bit CRC
+				setRegisterBits(CONFIG_REGISTER, (byte)(1<<CRCO));      // one = 2 bytes = 16 bit CRC
 				baseConfig = baseConfig | (1<<CRCO);
 				break;
 		}
@@ -324,8 +376,15 @@ public class NRF24L01 {
 
 	}
 
+	/**
+	 * Configure delay between retransmissions and number of retransmissions.
+	 *
+	 * @param delay How long to wait between each retry, in multiples of 250us, max is 15. 0 means 250us, 15 means 4000us.
+	 * @param count Number of retries (0 = no retries, max 15 retries)
+	 * @throws PigpioException
+     */
 	public void setRetries(int delay, int count) throws PigpioException {
-		writeByteRegister(SETUP_RETR_REGISTER,(byte)((delay & 0xf)<<ARD | (count & 0xf)<<ARC));
+		writeByteRegister(SETUP_RETR_REGISTER,(byte)((delay & 0x0F) << ARD | (count & 0xf)<<ARC));
 	}
 
 	// Checks if data is available for reading
@@ -468,10 +527,7 @@ public class NRF24L01 {
 		if(transmitMode){
 			byte status = getStatus();
 		    	
-			/*
-			 *  if sending successful (TX_DS) or max retries exceeded (MAX_RT).
-			 */
-
+			// if sending successful (TX_DS) or max retries exceeded (MAX_RT).
 			if((status & ((1 << TX_DS)  | (1 << MAX_RT))) != 0){
 				powerUpRx();
 				return false; 
@@ -488,7 +544,7 @@ public class NRF24L01 {
 	
 	public byte getConfig() throws PigpioException {
 		return readByteRegister(CONFIG_REGISTER);
-	} // End of getStatus
+	}
 	
 	public byte getRFChannel() throws PigpioException {
 		return readByteRegister(RF_CH_REGISTER);
@@ -541,7 +597,9 @@ public class NRF24L01 {
 		//pigpio.gpioDelay(200, JPigpio.PI_MILLISECONDS);
 		configRegister(STATUS_REGISTER, (byte)(BV(RX_DR) | BV(TX_DS) | BV(MAX_RT))); 
 
+		// PWR_UP + CE_HIGH for more than 150microseconds => RX Mode
 		ceHigh();
+
 	} // End of powerUpRx
 	
 	private void flushRx() throws PigpioException {
@@ -607,6 +665,58 @@ public class NRF24L01 {
 	private void csnLow() throws PigpioException {
 		pigpio.gpioWrite(csnPin, JPigpio.PI_LOW);
 	} // End of csnLow
+
+	/**
+	 * Start generating testing unodulated carrier wave.
+	 * For testing purposes only.
+	 * @param channel RF channel to start carrier wave on
+	 * @param powerLevel power level for carrier wave
+	 * @throws PigpioException
+     */
+	public void startTestCarrier(int channel, int powerLevel) throws PigpioException {
+		byte setupReg = readByteRegister(RF_SETUP);
+		byte newValue = setupReg;
+
+		powerUpTx();
+		newValue = (byte)(newValue | (1<<CONT_WAVE));
+		newValue = (byte)(newValue | (1<<PLL_LOCK));
+
+		writeByteRegister(RF_SETUP, newValue);
+
+		setChannel(channel);
+		setPALevel(powerLevel);
+
+		ceHigh();
+	}
+
+	/**
+	 * Stop generating testing carrier wave
+	 * @throws PigpioException
+     */
+	public void stopTestCarrier() throws PigpioException{
+		byte setupReg = readByteRegister(RF_SETUP);
+		byte newValue = setupReg;
+
+		ceLow();
+
+		powerUpRx();
+
+		newValue = (byte)(newValue & ~(1<<CONT_WAVE));
+		newValue = (byte)(newValue & ~(1<<PLL_LOCK));
+		writeByteRegister(RF_SETUP, newValue);
+
+	}
+
+	/**
+	 * Test whether a signal (carrier or otherwise) greater than or equal to -64dBm is present on the channel. Valid only on nRF24L01P (+) hardware.
+	 * Useful to check for interference on the current channel and channel hopping strategies.
+	 * @return true if signal => -64dBm, false if not
+	 * @throws PigpioException
+     */
+	public boolean testRPD() throws PigpioException {
+		return (readByteRegister(RPD) & 1) == 1;
+	}
+
 	
 	/**
 	 * Set a bit
@@ -753,9 +863,9 @@ public class NRF24L01 {
 
 			prn.print(  "CRC Length      = ");
 			if ((configReg & (1<<CRCO)) == (1<<CRCO) )
-				prn.println("32 bits");
-			else
 				prn.println("16 bits");
+			else
+				prn.println("8 bits");
 
 			prn.println("PA Power        = ???");
 

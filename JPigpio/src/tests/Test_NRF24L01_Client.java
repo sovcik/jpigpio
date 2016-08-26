@@ -34,7 +34,7 @@ public class Test_NRF24L01_Client {
 
 			byte tAddr[] = { 'C', 'B', 'X', '0', '1' };
 			p("setTADDR");
-			nrf24l01.setTADDR(tAddr);
+			nrf24l01.setTADDR(tAddr, true);
 
 			p("setConfig");
 			nrf24l01.config(32);
@@ -51,7 +51,6 @@ public class Test_NRF24L01_Client {
 			System.out.println("Address widths: " + nrf24l01.setupAddressWidthToString(nrf24l01.getAddressWidths()));
 
 			//nrf24l01.printDetails(System.out);
-			nrf24l01.setCRCSize(2);
 
 			nrf24l01.setDataRate(NRF24L01.RF24_1MBPS);
 
@@ -64,6 +63,7 @@ public class Test_NRF24L01_Client {
 			data[3] = '1';
 
 			System.out.println("Sending ...");
+
 			nrf24l01.send(data);
 			while (nrf24l01.isSending()) {
 				logStatus();
