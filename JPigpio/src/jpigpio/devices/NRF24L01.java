@@ -19,11 +19,13 @@ import static jpigpio.Utils.bytesToHex;
 //@SuppressWarnings("unused")
 public class NRF24L01 {
 	private JPigpio pigpio;
+
 	/**
 	 * CE which is Chip Enable has nothing to do with CSI.  This pin is driven high for a TX operation
 	 * and low for a RX operation.
 	 */
 	private int cePin;
+
 	/**
 	 * CSN is the SPI Slave Select ... we believe CSN = Chip Select NOT.
 	 */
@@ -147,18 +149,21 @@ public class NRF24L01 {
 	public static final int RF24_PA_MASK  = 0b11;
 
 	// address width
-	public static final int RF24_AW_1BYTE  = 0b00;
-	public static final int RF24_AW_2BYTES = 0b00;
-	public static final int RF24_AW_3BYTES = 0b00;
-	public static final int RF24_AW_4BYTES = 0b00;
-	public static final int RF24_AW_5BYTES = 0b00;
+	public static final int RF24_AW_3BYTES = 0b01;
+	public static final int RF24_AW_4BYTES = 0b10;
+	public static final int RF24_AW_5BYTES = 0b11;
 	
 	public NRF24L01(JPigpio pigpio) {
 		this.pigpio = pigpio;
-		channel = 76;
-		baseConfig = BV(EN_CRC) & ~BV(CRCO);
 	}
-	
+
+	/**
+	 * Initialize nRF24 chip and set the defaults
+	 * @param cePin gpio pin connected to CE
+	 * @param csnPin gpio pin connected to CSN
+	 * @return true if initialized successfully
+	 * @throws PigpioException
+     */
 	public boolean init(int cePin, int csnPin) throws PigpioException {
 		this.cePin = cePin;
 		this.csnPin = csnPin;
@@ -182,28 +187,12 @@ public class NRF24L01 {
 		if (setupReg == 0 || setupReg == (byte)0xFF)
 			return false;
 
-		// if there was some carrier test running before
-		clearRegisterBits(RF_SETUP, (byte)(CONT_WAVE | PLL_LOCK));
-
-		// reset CONFIG register & set CRC to 16 bit
-		setCRCSize(2);
-
-		// Set the address width to be 5 bytes
-		setAddressWidths((byte)0b11);
-
-		// enable receiving on pipe 0 and pipe 1
-		configRegister(EN_RXADDR_REGISTER, (byte)0b11);
-
-		// set data rate to 1Mbps
-		setDataRate(RF24_1MBPS);
-
-		// Set 1500uS (minimum for 32B payload in ESB@250KBPS) timeouts, to make testing a little easier
-		// WARNING: If this is ever lowered, either 250KBS mode with AA is broken or maximum packet
-		// sizes must never be used. See documentation for a more complete explanation.
-		setRetries(5,15);
+		//reset();
 
 		// get status of dynamic payload
 		dynPayloadEnabled = ((readByteRegister(FEATURE) & (byte)1<<EN_DPL) == (byte)1<<EN_DPL);
+
+		channel = getChannel();
 
 		// Start receiver
 		powerUpRx();
@@ -213,6 +202,56 @@ public class NRF24L01 {
 
 	} // End of init
 
+	/**
+	 * Set initial chip parameters
+	 * according to nRF24 documentation
+	 * @throws PigpioException
+     */
+	public void reset() throws  PigpioException {
+		csnLow();
+		flushTx();
+		csnHigh();
+
+		csnLow();
+		flushRx();
+		csnHigh();
+
+		baseConfig = (byte)1<<EN_CRC;
+
+		// reset registers
+		byte a[] = {
+				(byte) baseConfig, // CONFIG
+				(byte) 0b00111111, // EN_AA
+				(byte) 0b00000011, // EN_RXADDR
+				(byte) 0b00000011, // SETUP_AW
+				(byte) 0b00000011, // SETUP_RETR
+				(byte) 0b00000010, // RF_CH
+				(byte) 0b00001110, // RF_SETUP
+				(byte) 0b01110000, // STATUS (clear bits RX_DR, TX_DS, MAX_RT)
+		};
+		writeRegister(CONFIG_REGISTER, a);
+
+		byte b[] = {
+				0x15,    // RX_PW_P0
+				0x16,    // RX_PW_P1
+				0x17,       // RX_PW_P2
+				0x18,       // RX_PW_P3
+				0x19,       // RX_PW_P4
+				0x20        // RX_PW_P5
+		};
+		//TODO: despite of entered data, all registers have value of P5
+		writeRegister(RX_PW_P0, b);
+
+		writeByteRegister(DYNPD, (byte) 0);
+
+		writeByteRegister(FEATURE, (byte) 0);
+
+	}
+
+	/**
+	 * Terminate connection to nRF24 chip
+	 * @throws PigpioException
+     */
 	public void terminate() throws PigpioException {
 		pigpio.gpioTerminate();
 	}
@@ -225,8 +264,8 @@ public class NRF24L01 {
 	 */
 	public void config(int payloadSize) throws PigpioException {
 		// Set length of incoming payload
-		configRegister(RX_PW_P0, (byte)payloadSize);
-		configRegister(RX_PW_P1, (byte)payloadSize);
+		writeByteRegister(RX_PW_P0, (byte)payloadSize);
+		writeByteRegister(RX_PW_P1, (byte)payloadSize);
 		this.payloadSize = payloadSize;
 
 		// Start receiver 
@@ -235,6 +274,12 @@ public class NRF24L01 {
 	} // End of config
 
 	// Sets the receiving address
+
+	/**
+	 * Sets receiving address P1.
+	 * @param adr
+	 * @throws PigpioException
+     */
 	public void setRADDR(byte adr[]) throws PigpioException	{
 		ceLow();
 		writeRegister(RX_ADDR_P1,adr);
@@ -255,8 +300,13 @@ public class NRF24L01 {
 
 	}
 
+	/**
+	 * Set frequency channel nRF24 operates on
+	 * @param ch channel 0-127
+	 * @throws PigpioException
+     */
 	public void setChannel(int ch) throws PigpioException {
-		configRegister(RF_CH_REGISTER, (byte)ch);
+		writeByteRegister(RF_CH_REGISTER, (byte)(ch & 0x7F)); // max 127 = 0x7F
 		channel = (byte)ch;
 	}
 
@@ -305,17 +355,74 @@ public class NRF24L01 {
 		writeByteRegister(RF_SETUP, newValue);
 	}
 
-	public void setPayloadWidth(int pipe, byte width) throws PigpioException {
-		byte regs[] = {RX_PW_P0, RX_PW_P1, RX_PW_P2, RX_PW_P3, RX_PW_P4, RX_PW_P5};
-
-		if (pipe >= 0 && pipe <= 5)
-			writeByteRegister(regs[pipe], width);
-
-		if (pipe == 0)
-			payloadSize = width;
-
+	/**
+	 * Enable or disable automatic packet acknowledgements. Default is ENABLE.
+	 * @param enable true to enable, false to disable
+	 * @throws PigpioException
+     */
+	public void setAutoACK(boolean enable) throws PigpioException{
+		if (enable)
+			writeByteRegister(EN_AA,(byte)0b00111111);
+		else
+			writeByteRegister(EN_AA,(byte)0);
 	}
 
+	/**
+	 * Enable or disable automatic packet acknowledgements for specific pipe.
+	 * @param pipe true to enable, false to disable
+	 * @param enable
+	 * @throws PigpioException
+     */
+	public void setAutoACK(int pipe, boolean enable) throws PigpioException{
+		if (enable)
+			setRegisterBits(EN_AA,(byte)(1<<pipe));
+		else
+			clearRegisterBits(EN_AA,(byte)(1<<pipe));
+	}
+
+	/**
+	 * Set payload (packet) size for all pipes
+	 * @param size payload size 1-32 bytes
+	 * @throws PigpioException
+     */
+    public void setPayloadSize(int size) throws PigpioException {
+    	if (size>0 && size <33){
+    		byte a[] = {(byte)size, (byte)size, (byte)size, (byte)size, (byte)size, (byte)size};
+    		writeRegister(RX_PW_P0,a);
+			this.payloadSize = size;
+		}
+	}
+
+	/**
+	 * Set payload (packet) size for specific pipe
+	 * @param pipe pipe 0-5
+	 * @param size payload size 1-32 bytes
+	 * @throws PigpioException
+     */
+	public void setPayloadSize(int pipe, int size) throws PigpioException {
+		if (size>0 && size <33 && pipe >=0 && pipe <6){
+			writeByteRegister(RX_PW_P0+pipe,(byte)size);
+			if (pipe == 0)
+				payloadSize = size;
+
+		}
+	}
+
+
+	public int getPayloadSize() {
+		return payloadSize;
+	}
+
+	//public int getDynamicPayloadSize()
+
+	//public void enableACKPayload()
+
+	//public void enableDynamicPayload()
+
+	/**
+	 * Disable CRC
+	 * @throws PigpioException
+     */
 	public void disableCRC() throws PigpioException {
 		setCRCSize(0);
 	}
@@ -347,6 +454,12 @@ public class NRF24L01 {
 
 	}
 
+	/**
+	 * Set specified bits in single-byte register
+	 * @param reg register to set
+	 * @param bits bits to set
+	 * @throws PigpioException
+     */
 	private void setRegisterBits(int reg, byte bits) throws PigpioException {
 		byte regVal = readByteRegister(reg);
 		byte newVal = regVal;
@@ -354,12 +467,17 @@ public class NRF24L01 {
 		writeByteRegister(reg,newVal);
 	}
 
+	/**
+	 * Clear specified bits in single-byte register
+	 * @param reg register to set
+	 * @param bits bts to clear
+	 * @throws PigpioException
+     */
 	private void clearRegisterBits(int reg, byte bits) throws PigpioException {
 		byte regVal = readByteRegister(reg);
 		byte newVal = regVal;
 		newVal = (byte)(newVal & ~bits);
 		writeByteRegister(reg,newVal);
-
 	}
 
 	public void openReadingPipe(int pipe) throws PigpioException {
@@ -377,9 +495,12 @@ public class NRF24L01 {
 	}
 
 	/**
-	 * Configure delay between retransmissions and number of retransmissions.
+	 * Configure delay between retransmissions and number of retransmissions.<br/><br/>
+	 * Set 1500uS (minimum for 32B payload in ESB@250KBPS) timeouts, to make testing a little easier <br/>
+	 * WARNING: If this is ever lowered, either 250KBS mode with AA is broken or maximum packet
+	 * sizes must never be used. See documentation for a more complete explanation.
 	 *
-	 * @param delay How long to wait between each retry, in multiples of 250us, max is 15. 0 means 250us, 15 means 4000us.
+	 * @param delay How long to wait between each retry, in multiples of 250us, max is 15. 0 means 250us, 15 means 4000us.*
 	 * @param count Number of retries (0 = no retries, max 15 retries)
 	 * @throws PigpioException
      */
@@ -387,7 +508,11 @@ public class NRF24L01 {
 		writeByteRegister(SETUP_RETR_REGISTER,(byte)((delay & 0x0F) << ARD | (count & 0xf)<<ARC));
 	}
 
-	// Checks if data is available for reading
+	/**
+	 * Checks if data is available for reading in RX FIFO
+	 * @return true if there is data available for reading
+	 * @throws PigpioException
+     */
 	public boolean dataReady() throws PigpioException {
 		// See note in getData() function - just checking RX_DR isn't good enough
 		byte status = getStatus();
@@ -425,27 +550,50 @@ public class NRF24L01 {
 		//  repeat from step 1)."
 		// So if we're going to clear RX_DR here, we need to check the RX FIFO
 		// in the dataReady() function
-		configRegister(STATUS_REGISTER, (byte)BV(RX_DR));   // Reset status register
+		writeByteRegister(STATUS_REGISTER, (byte)BV(RX_DR));   // Reset status register
 	} // End of getData
 
 
-	// Clocks only one byte into the given MiRF register
+	/**
+	 * (DEPRECATED) Write single byte to specified register.<br/>
+	 * Use method writeByteRegister instead.
+	 * @param reg registe to write to
+	 * @param value new value
+	 * @throws PigpioException
+     */
 	public void configRegister(int reg, byte value) throws PigpioException {
 		writeByteRegister(reg, value);
 	} // End of configRegister
 
+	/**
+	 * Reads single one-byte register
+	 * @param reg register to read
+	 * @return register value
+	 * @throws PigpioException
+     */
 	public byte readByteRegister(int reg) throws PigpioException{
 	   	byte data[] = {NOP};
 	   	readRegister(reg,data);
 		return data[0];
 	}
 
-	// Reads an array of bytes from the given start position in the MiRF registers.
+	/**
+	 * Reads an array of bytes from the given start position in the MiRF registers.
+	 * @param reg starting register
+	 * @param value array of bytes to store read values to
+	 * @throws PigpioException
+     */
 	public void readRegister(int reg, byte value[]) throws PigpioException {
 	    nrfSpiWrite((R_REGISTER | (REGISTER_MASK & reg)), value);
 	} // End of readRegister
 
-	// Writes an array of bytes into inte the MiRF registers.
+	/**
+	 * Writes provided bytes into MiRF registers starting from provided register address.<br/>
+	 * Good for multi-byte registers. For single-byte registers you can use method writeByteRegister.
+	 * @param reg starting register
+	 * @param data
+	 * @throws PigpioException
+     */
 	public void writeRegister(int reg, byte data[]) throws PigpioException {
 		//System.out.println("Write register: " + reg + ", mask = " + (W_REGISTER | (REGISTER_MASK & reg)) );
 		
@@ -455,6 +603,12 @@ public class NRF24L01 {
 		nrfSpiWrite((W_REGISTER | (REGISTER_MASK & reg)), clonedData);
 	} // End of writeRegister
 
+	/**
+	 * Writes value to single-byte register. For multi-byte registers you can use method writeRegister.
+	 * @param reg register to write to
+	 * @param value new register value
+	 * @throws PigpioException
+     */
 	public void writeByteRegister(int reg, byte value) throws PigpioException {
 		byte data[] = {value};
 		writeRegister(reg, data);
@@ -475,48 +629,21 @@ public class NRF24L01 {
 		byte status = getStatus();
 
 		// wait for previous transmit to complete
-		while (isSending()){
+		while (isSending());
 
-		}
+		ceLow(); 		// Put the device to mode Standby-I
+		powerUpTx();    // Set to transmitter mode , Power up => mode Standby-II
 
-		/*
-		while (transmitMode) {
-			status = getStatus();
+		nrfSpiWrite(W_TX_PAYLOAD, buff);   // Write to TX FIFO register
 
-			if((status & ((1 << TX_DS)  | (1 << MAX_RT))) != 0){
-				transmitMode = false;
-				break;
-			}
-		} // Wait until last packet is sent
-		*/
-
-		ceLow(); // Put the device in RX state
-
-		powerUpTx();       // Set to transmitter mode , Power up
-		//flushTx();
-
-		byte fifo = getFIFOStatus();
-		p("FIFO Before: "+String.format("%02x",fifo)+"  "+String.format("%8s", Integer.toBinaryString(fifo & 0xFF)).replace(' ', '0'));
-		nrfSpiWrite(W_TX_PAYLOAD, buff);   // Write  to TX FIFO register
-		fifo = getFIFOStatus();
-		p("FIFO After: "+String.format("%02x",fifo)+"  "+String.format("%8s", Integer.toBinaryString(fifo & 0xFF)).replace(' ', '0'));
-
-		p("Sending CE-TX pulse");
-		ceHigh();
 		pigpio.gpioDelay(100);
-		ceLow();
-		//cePulse(100); // 15 microseconds long high pulse is more then 10microsec and should trigger transmit mode
+		ceLow();        // Packet finished, CE=0 => mode Standby-I
 
 		try { Thread.sleep(100); } catch (InterruptedException e) {}
-		fifo = getFIFOStatus();
-		p("FIFO After TX: "+String.format("%02x",fifo)+"  "+String.format("%8s", Integer.toBinaryString(fifo & 0xFF)).replace(' ', '0'));
 
-
-	} // End of send
+	}
 	
 	/**
-	 * isSending.
-	 *
 	 * Test if chip is still sending.
 	 * When sending has finished return chip to listening.
 	 *
@@ -536,24 +663,62 @@ public class NRF24L01 {
 			return true;
 		}
 		return false;
-	} // End of isSensing
-	
+	} // End of isSending
+
+	/**
+	 * Read STATUS register
+	 * @return value stored in STATUS register
+	 * @throws PigpioException
+     */
 	public byte getStatus() throws PigpioException {
 		return readByteRegister(STATUS_REGISTER);
-	} // End of getStatus
-	
+	}
+
+	/**
+	 * Read CONFIG register
+	 * @return value stored in CONFIG register
+	 * @throws PigpioException
+     */
 	public byte getConfig() throws PigpioException {
 		return readByteRegister(CONFIG_REGISTER);
 	}
-	
-	public byte getRFChannel() throws PigpioException {
+
+	/**
+	 * Get frequency channel nRF24 chip is currently using
+	 * @return used frequency channel number
+	 * @throws PigpioException
+     */
+	public byte getChannel() throws PigpioException {
 		return readByteRegister(RF_CH_REGISTER);
 	}
-	
-	public byte getAddressWidths() throws PigpioException {
-		return readByteRegister(SETUP_AW_REGISTER);
+
+	/**
+	 * Return address width in bytes
+	 * @return address width in bytes (3-5)
+	 * @throws PigpioException
+     */
+	public int getAddressWidth() throws PigpioException {
+		byte w = readByteRegister(SETUP_AW_REGISTER);
+		int l = -1;
+		switch (w & 0b11){
+			case RF24_AW_3BYTES:
+				l=3;
+				break;
+			case RF24_AW_4BYTES:
+				l=4;
+				break;
+			case RF24_AW_5BYTES:
+				l=5;
+				break;
+		}
+		return l;
 	}
 
+	/**
+	 * Read addresses receiver is listening from
+	 * @return array containing addresses of reading pipes 0-5
+	 * @throws PigpioException
+     */
 	public byte[][] getRXAddresses() throws PigpioException {
 		byte addr[][] = new byte[6][5];
 		readRegister(RX_ADDR_P0,addr[0]);
@@ -565,15 +730,38 @@ public class NRF24L01 {
 		return addr;
 	}
 
+	/**
+	 * Read transmitter address - source address
+	 * @return transmitter address
+	 * @throws PigpioException
+     */
 	public byte[] getTXAddress() throws PigpioException {
 		byte addr[] = new byte[5];
 		readRegister(TX_ADDR,addr);
 		return addr;
 	}
 
-	public void setAddressWidths(int width) throws PigpioException {
+	/**
+	 * Set RX/TX address width.
+	 * @param width Width in bytes. Allowed values are 3,4,5.
+	 * @throws PigpioException
+     */
+	public void setAddressWidth(int width) throws PigpioException {
 		/* Initialize with NOP so we get the first byte read back. */
-		configRegister(SETUP_AW_REGISTER, (byte)width);
+		switch (width){
+			case 3:
+				width = RF24_AW_3BYTES;
+				break;
+			case 4:
+				width = RF24_AW_4BYTES;
+				break;
+			case 5:
+				width = RF24_AW_5BYTES;
+				break;
+			default:
+				width = RF24_AW_5BYTES;
+		}
+		writeByteRegister(SETUP_AW_REGISTER, (byte)width);
 	}
 
 	public byte getAutomaticRetransmission() throws PigpioException {
@@ -583,33 +771,49 @@ public class NRF24L01 {
 	public byte getFIFOStatus() throws PigpioException {
 		return readByteRegister(FIFO_STATUS_REGISTER);
 	}
-	
+
+	/**
+	 * Flush TX FIFO
+	 * @throws PigpioException
+     */
 	private void flushTx() throws PigpioException {
 		nrfSpiWrite(FLUSH_TX, null);
 	} // End of flushTx
-	
+
+	/**
+	 * set device to RX mode (see chip documentation for more details)
+	 * @throws PigpioException
+     */
 	private void powerUpRx() throws PigpioException {
 		transmitMode = false;
-		ceLow();
-		p("Powering up RX");
-		p("Setting CONFIG to: " + configToString((byte)(baseConfig | BV(PWR_UP) | BV(PRIM_RX))));
-		configRegister(CONFIG_REGISTER, (byte)(baseConfig | BV(PWR_UP) | BV(PRIM_RX) | BV(MASK_RX_DR)));
-		//pigpio.gpioDelay(200, JPigpio.PI_MILLISECONDS);
-		configRegister(STATUS_REGISTER, (byte)(BV(RX_DR) | BV(TX_DS) | BV(MAX_RT))); 
+		ceLow(); // => mode Standby-I
+		writeByteRegister(CONFIG_REGISTER, (byte)(baseConfig | BV(PWR_UP) | BV(PRIM_RX) | BV(MASK_RX_DR)));
+		writeByteRegister(STATUS_REGISTER, (byte)(BV(RX_DR) | BV(TX_DS) | BV(MAX_RT)));
 
 		// PWR_UP + CE_HIGH for more than 150microseconds => RX Mode
 		ceHigh();
+		pigpio.gpioDelay(50, JPigpio.PI_MILLISECONDS);
+		ceLow();
 
 	} // End of powerUpRx
-	
+
+	/**
+	 * Flush RX FIFO
+	 * @throws PigpioException
+     */
 	private void flushRx() throws PigpioException {
 		nrfSpiWrite(FLUSH_RX, null);
 	} // End of flushRx
-	
+
+	/**
+	 * Set device to TX mode (see chip documentation for more details)
+	 * @throws PigpioException
+     */
 	private void powerUpTx() throws PigpioException {
 		transmitMode = true;
-		p("Setting CONFIG to: " + configToString((byte)(baseConfig | BV(PWR_UP) & ~BV(PRIM_RX) | BV(MASK_RX_DR))));
-		configRegister(CONFIG_REGISTER, (byte)(baseConfig | BV(PWR_UP) & ~BV(PRIM_RX) | BV(MASK_RX_DR)));
+
+		writeByteRegister(CONFIG_REGISTER, (byte)(baseConfig | BV(PWR_UP) & ~BV(PRIM_RX) | BV(MASK_RX_DR)));
+		ceHigh();
 		pigpio.gpioDelay(200, JPigpio.PI_MILLISECONDS);
 	} // End of powerUpTx
 
@@ -628,12 +832,11 @@ public class NRF24L01 {
 	} // End of nrfSpiWrite
 	
 	/**
-	 * Put the device into a TX state
+	 * Move device from mode Standby-I to RX or TX mode - depending on PRIM_RX
 	 * @throws PigpioException
 	 */
 	private void ceHigh() throws PigpioException {
 		pigpio.gpioWrite(cePin, JPigpio.PI_HIGH);
-		p("CE=1");
 	} // End of ceHigh
 	
 	/**
@@ -642,12 +845,15 @@ public class NRF24L01 {
 	 */
 	private void ceLow() throws PigpioException {
 		pigpio.gpioWrite(cePin, JPigpio.PI_LOW);
-		p("CE=0");
 	} // End of ceLow
 
+	/**
+	 * Set CE to HIGH for specified period of time
+	 * @param duration how long CE should be HIGH in microseconds
+	 * @throws PigpioException
+     */
 	private void cePulse(long duration) throws PigpioException {
 		pigpio.gpioTrigger(cePin, duration, true);
-		p("CE=pulse");
 	}
 	
 	/**
@@ -737,7 +943,7 @@ public class NRF24L01 {
 		return ret;
 	}
 	
-	public String configToString(byte value) {
+	public  String configToString(byte value) {
 		String ret = "";
 		ret += "RX IRQ allowed: " + bitSet(value, MASK_RX_DR);
 		ret += ", TX IRQ allowed: " + bitSet(value, MASK_TX_DS);
@@ -765,20 +971,6 @@ public class NRF24L01 {
 		ret += ", RX Empty: " + bitSet(value, RX_EMPTY);
 		return ret;
 	}
-	
-	public String setupAddressWidthToString(byte value) {
-		switch(value & 0b11) {
-		case 0b00:
-			return "Illegal value";
-		case 0b01:
-			return "3 bytes";
-		case 0b10:
-			return "4 bytes";
-		case 0b11:
-			return "5 bytes";
-		}
-		return "???";
-	}
 
 	public String dataRateToString(int dataRate) {
 		switch (dataRate) {
@@ -794,22 +986,14 @@ public class NRF24L01 {
 		return "???";
 	}
 
-	public String bitSet(byte value, int bit) {
+	private String bitSet(byte value, int bit) {
 		return ((value & BV(bit))!=0)?"1":"0";
 	}
-	
-	public List<Byte> toList(byte data[]) {
-		List<Byte> byteList = new ArrayList<>();
-		for (byte b: data) {
-			byteList.add(b);
-		}
-		return byteList;
-	}
-	
-	private void p(String text) {
-		System.out.println(text);
-	}
 
+	/**
+	 * Print detailed information about nRF24 chip
+	 * @param prn PrintStream to which data will be sent
+     */
 	public void printDetails(PrintStream prn){
 
 		try {
@@ -841,7 +1025,7 @@ public class NRF24L01 {
 			byte enRX = readByteRegister(EN_RXADDR_REGISTER);
 			prn.println("EN_RXADDR       = 0x"+ String.format("%02x",enRX) + "  " + String.format("%8s", Integer.toBinaryString(enRX & 0xFF)).replace(' ', '0'));
 
-			byte rfChannel = getRFChannel();
+			byte rfChannel = getChannel();
 			prn.println("RF_CH           = 0x"+ String.format("%02x",rfChannel));
 
 			byte setupReg = readByteRegister(RF_SETUP);
@@ -872,6 +1056,11 @@ public class NRF24L01 {
 			byte retry = readByteRegister(SETUP_RETR_REGISTER);
 			prn.println("SETUP_RETR      = 0x"+ String.format("%02x",retry) + "  " + String.format("%8s", Integer.toBinaryString(retry & 0xFF)).replace(' ', '0'));
 
+			prn.println();
+
+			prn.println(setupRetrToString(getAutomaticRetransmission()));
+			prn.println("RF Channel      = " + getChannel());
+			prn.println("Address widths  = " + getAddressWidth() + " bytes");
 
 		} catch (PigpioException e) {
 			prn.println(e);
