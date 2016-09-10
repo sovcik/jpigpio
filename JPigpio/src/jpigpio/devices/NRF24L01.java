@@ -230,22 +230,30 @@ public class NRF24L01 {
 				(byte) 0b00001110, // RF_SETUP
 				(byte) 0b01110000, // STATUS (clear bits RX_DR, TX_DS, MAX_RT)
 		};
-		writeRegister(CONFIG_REGISTER, a);
+		writeByteRegister(CONFIG_REGISTER, a[0]);
+		writeByteRegister(EN_AA,a[1]);
+		writeByteRegister(EN_RXADDR_REGISTER, a[2]);
+		writeByteRegister(SETUP_AW_REGISTER, a[3]);
+		writeByteRegister(SETUP_RETR_REGISTER, a[4]);
+		writeByteRegister(RF_CH_REGISTER, a[5]);
+		writeByteRegister(RF_SETUP, a[6]);
+		writeByteRegister(STATUS_REGISTER, a[7]);
 
 		byte b[] = {
-				0x15,    // RX_PW_P0
-				0x16,    // RX_PW_P1
-				0x17,    // RX_PW_P2
-				0x18,    // RX_PW_P3
-				0x19,    // RX_PW_P4
+				0x20,    // RX_PW_P0
+				0x20,    // RX_PW_P1
+				0x20,    // RX_PW_P2
+				0x20,    // RX_PW_P3
+				0x20,    // RX_PW_P4
 				0x20     // RX_PW_P5
 		};
-		//TODO: despite of entered data, all registers have value of P5
-		//writeRegister(RX_PW_P0, b);
 
-		//byte[] r = {0,0,0,0,0,0};
-
-		//readRegister(RX_PW_P0,r);
+		writeByteRegister(RX_PW_P0, b[0]);
+		writeByteRegister(RX_PW_P1, b[1]);
+		writeByteRegister(RX_PW_P2, b[2]);
+		writeByteRegister(RX_PW_P3, b[3]);
+		writeByteRegister(RX_PW_P4, b[4]);
+		writeByteRegister(RX_PW_P5, b[5]);
 
 		writeByteRegister(DYNPD, (byte) 0);
 
@@ -484,19 +492,6 @@ public class NRF24L01 {
 		byte newVal = regVal;
 		newVal = (byte)(newVal & ~bits);
 		writeByteRegister(reg,newVal);
-	}
-
-	public void openReadingPipe(int pipe, long address) throws PigpioException {
-		if (pipe < 0 || pipe > 5)
-			throw
-			setRegisterBits(EN_RXADDR_REGISTER, (byte) (1 << pipe));
-		}
-	}
-
-	public void closeReadingPipe(int pipe) throws PigpioException {
-		if (pipe >= 0 && pipe <= 5)
-			clearRegisterBits(EN_RXADDR_REGISTER,(byte)(1<<pipe));
-
 	}
 
 	/**
