@@ -138,7 +138,7 @@ public class Test_NRF24L01 {
 
 				// if OK, then read reply
 				if (nrf24l01.dataReady()) {
-					nrf24l01.read(data32);
+					nrf24l01.getData(data32);
 					System.out.print("Reply : "+Utils.dumpData(data32));
 				}
 
@@ -150,7 +150,7 @@ public class Test_NRF24L01 {
 			// RECEIVER ROLE =======================
 			if (role == 1) {
 				if (nrf24l01.dataReady()) {
-					nrf24l01.read(data32);
+					nrf24l01.getData(data32);
 					System.out.println("Received : "+Utils.dumpData(data32));
 
 					nrf24l01.stopListening();

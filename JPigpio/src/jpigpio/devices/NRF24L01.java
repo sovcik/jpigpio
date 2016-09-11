@@ -2,9 +2,7 @@ package jpigpio.devices;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.List;
 
 import jpigpio.JPigpio;
 import jpigpio.PigpioException;
@@ -41,7 +39,7 @@ public class NRF24L01 {
 	private int payloadSize = 32;
 	private final int MAX_PAYLOAD_SIZE		= 32;
 
-	
+
 	public static final int CONFIG_REGISTER		= 0x00;
 	public static final int EN_AA				= 0x01;
 	public static final int EN_RXADDR_REGISTER	= 0x02;
@@ -124,6 +122,7 @@ public class NRF24L01 {
 	public static final int EN_ACK_PAY = 1;
 	public static final int EN_DYN_ACK = 0;
 
+
 	/* Instruction Mnemonics */
 	private final int R_REGISTER	= 0x00; // Command to read a register
 	private final int W_REGISTER	= 0x20;
@@ -148,6 +147,7 @@ public class NRF24L01 {
 	public static final int RF24_PA_HIGH  = 0b100;
 	public static final int RF24_PA_MAX   = 0b110;
 	public static final int RF24_PA_MASK  = 0b110;
+
 
 	// address width
 	public static final int RF24_AW_3BYTES = 0b01;
@@ -230,6 +230,7 @@ public class NRF24L01 {
 				(byte) 0b00001110, // RF_SETUP
 				(byte) 0b01110000, // STATUS (clear bits RX_DR, TX_DS, MAX_RT)
 		};
+
 		writeByteRegister(CONFIG_REGISTER, a[0]);
 		writeByteRegister(EN_AA,a[1]);
 		writeByteRegister(EN_RXADDR_REGISTER, a[2]);
@@ -418,7 +419,6 @@ public class NRF24L01 {
 			writeByteRegister(RX_PW_P0+pipe,(byte)size);
 			if (pipe == 0)
 				payloadSize = size;
-
 		}
 	}
 
@@ -534,9 +534,10 @@ public class NRF24L01 {
 	/**
 	 * Read data received into the array
 	 * @param data The array of data to be returned.
+	 * @return true if there is more data to read
 	 * @throws PigpioException
 	 */
-	public void getData(byte data[])  throws PigpioException {
+	public boolean getData(byte data[])  throws PigpioException {
 		// NVI: per product spec, p 67, note c:
 		//  "The RX_DR IRQ is asserted by a new packet arrival event. The procedure
 		//  for handling this interrupt should be: 1) read payload through SPI,
@@ -545,20 +546,13 @@ public class NRF24L01 {
 		//  repeat from step 1)."
 		// So if we're going to clear RX_DR here, we need to check the RX FIFO
 		// in the dataReady() function
+
 		nrfSpiWrite(R_RX_PAYLOAD, data); // Read payload
 		setRegisterBits(STATUS_REGISTER,(byte)(1<<RX_DR)); // clear RX_DR
+
+		return (readByteRegister(FIFO_STATUS_REGISTER) & BV(RX_EMPTY)) > 0;
 
 	} // End of getData
-
-	public boolean read( byte data[])	throws PigpioException {
-		// Fetch the payload
-		nrfSpiWrite(R_RX_PAYLOAD, data); // Read payload
-		setRegisterBits(STATUS_REGISTER,(byte)(1<<RX_DR)); // clear RX_DR
-
-		// was this the last of the data available?
-		return (readByteRegister(FIFO_STATUS_REGISTER) & BV(RX_EMPTY)) > 0;
-	}
-
 
 	/**
 	 * (DEPRECATED) Write single byte to specified register.<br/>
@@ -840,7 +834,6 @@ public class NRF24L01 {
 	private void flushTx() throws PigpioException {
 		nrfSpiWrite(FLUSH_TX, null);
 	} // End of flushTx
-
 
 	private void transmitFinished() throws PigpioException {
 		transmitMode = false;
