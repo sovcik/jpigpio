@@ -193,11 +193,9 @@ public class Utils {
      * @return
 	 * 	difference between ticks
      */
-	public static int tickDiff(long olderTick, long tick) {
+	public static long tickDiff(long olderTick, long tick) {
 		int tDiff = (int)(tick - olderTick);
-		if (tDiff < 0)
-			tDiff += (1 << 32);
-		return tDiff;
+		return Integer.toUnsignedLong(tDiff);
 	}
 
 	public static String bytesToHex(byte[] bytes) {
@@ -228,6 +226,18 @@ public class Utils {
 			bytes[i] = (byte)(nibb[i*2]<<4 | nibb[i*2+1]);
 
 		return bytes;
+	}
+
+	public static Long LEint2Long(byte[] bytes){
+		byte[] b = new byte[8];
+		Long ret;
+		for (int i=0;i<4;i++)
+			b[7-i] = bytes[i];
+
+		// then convert bytes to long (as Java has no unsigned int, let's use long)
+		ret = java.nio.ByteBuffer.wrap(b).getLong();
+
+		return ret;
 	}
 
 } // End of class
